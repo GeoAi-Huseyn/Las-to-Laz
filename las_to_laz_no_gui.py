@@ -520,3 +520,5 @@ if __name__ == "__main__":
     progress_las_to_laz(input_files, output_folder, laszip_path)
     
     input("\nProqramı bağlamaq üçün Enter basın...")
+
+    # test
