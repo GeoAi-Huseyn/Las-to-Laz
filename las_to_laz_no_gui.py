@@ -2,6 +2,22 @@ import tkinter as tk
 from tkinter import filedialog
 import subprocess
 import os
+import ctypes
+
+
+
+def get_short_path_name(path):
+    """Windows qısa yolunu (8.3 formatı) əldə edir - Unicode problemlərini həll etmək üçün"""
+    if not os.path.exists(path):
+        return path
+    buffer_size = 256
+    buffer = ctypes.create_unicode_buffer(buffer_size)
+    get_short_path_name_w = ctypes.windll.kernel32.GetShortPathNameW
+    res = get_short_path_name_w(path, buffer, buffer_size)
+    if res > buffer_size:
+        buffer = ctypes.create_unicode_buffer(res)
+        get_short_path_name_w(path, buffer, res)
+    return buffer.value
 
 
 def input_data(title="Faylları seçin", filetypes=None):
@@ -9,8 +25,8 @@ def input_data(title="Faylları seçin", filetypes=None):
         if filetypes is None:
             filetypes = [("All Files", "*.*")]
 
-        root = tk.Tk()
-        root.withdraw()
+
+
 
         file_paths = filedialog.askopenfilenames(
             title=title,
@@ -30,8 +46,7 @@ def input_data(title="Faylları seçin", filetypes=None):
 
 def output_data(title="Papka seçin"):
     try:
-        root = tk.Tk()
-        root.withdraw()
+
 
         folder_path = filedialog.askdirectory(title=title)
 
@@ -50,8 +65,7 @@ def select_laszip():
     """laszip.exe faylını seçmək üçün"""
     try:
         print("laszip.exe faylını seçin")
-        root = tk.Tk()
-        root.withdraw()
+
         
         file_path = filedialog.askopenfilename(
             title="laszip.exe faylını seçin",
@@ -86,22 +100,58 @@ def progress_las_to_laz(input_files, output_folder, laszip_path):
                 print(f"\nÇevrilir: {os.path.basename(input_file)}")
                 
                 # Çıxış faylının adını təyin et
-                output_filename = os.path.basename(input_file).replace('.las', '.laz')
+                output_filename = os.path.splitext(os.path.basename(input_file))[0] + '.laz'
                 output_file = os.path.join(output_folder, output_filename)
                 
                 # Əgər fayl mövcuddursa, xəbərdarlıq ver
                 if os.path.exists(output_file):
                     print(f"⚠ Diqqət: {output_filename} mövcuddur, üzərinə yazılacaq...")
                 
-                # CMD komandası (-odir və -olaz istifadə edək)
+                # Pathları sistem formatına uyğunlaşdır (Windows üçün backslash)
+                # Diqqət: 'İ' kimi hərflər laszip-də problem yaradır, ona görə ShortPath (8.3) istifadə edirik
+                input_file_short = get_short_path_name(input_file)
+                laszip_path_short = get_short_path_name(laszip_path)
+
+                # Pathları sistem formatına uyğunlaşdır (Windows üçün backslash)
+                input_dir = os.path.dirname(input_file)
+                temp_input_name = "temp_safe_input.las"
+                temp_input_full_path = os.path.join(input_dir, temp_input_name)
+                
+                # Əgər müvəqqəti fayl adı artıq mövcuddursa, onu silək (təhlükəsizlik üçün)
+                if os.path.exists(temp_input_full_path):
+                    try:
+                        os.remove(temp_input_full_path)
+                    except:
+                        pass # Silə bilməsək davam edirik, rename xəta verəcək onsuz
+                
+                # Faylı müvəqqəti adla rename edirik (Unicode problemlərindən qaçmaq üçün)
+                renamed_succesfully = False
+                try:
+                    os.rename(input_file, temp_input_full_path)
+                    renamed_succesfully = True
+                    print(f"  Fayl müvəqqəti adlandırıldı: {temp_input_name}")
+                except Exception as e:
+                    print(f"  Rename xətası: {e}")
+                    # Rename alınmadısa, olduğu kimi davam etməyə çalışırıq (amma yəqin ki alınmayacaq)
+                    temp_input_full_path = input_file
+
+                # Output üçün müvəqqəti sadə ad
+                temp_output_filename = "temp_safe_output.laz"
+                temp_output_path = os.path.join(output_folder, temp_output_filename)
+                
+                # laszip path-ını da qısa yola çevir (əgər path-da boşluq və s. varsa)
+                laszip_path_cmd = get_short_path_name(laszip_path)
+
+                # CMD komandası
                 command = [
-                    laszip_path,
-                    '-i', input_file,
-                    '-o', output_file,
-                    '-olaz'  # LAZ formatında çıxarış
+                    laszip_path_cmd,
+                    '-i', temp_input_full_path,
+                    '-o', temp_output_path,
+                    '-olaz'
                 ]
                 
-                print(f"Komanda: {' '.join(command)}")
+                # Debug üçün komandanı çap et
+                print(f"Komanda: {command}")
                 
                 # Prosesi işə sal
                 process = subprocess.Popen(
@@ -113,9 +163,34 @@ def progress_las_to_laz(input_files, output_folder, laszip_path):
                 
                 stdout, stderr = process.communicate()
                 
+                # Orijinal fayl adını mütləq bərpa edirik!
+                if renamed_succesfully:
+                    try:
+                        os.rename(temp_input_full_path, input_file)
+                        print(f"  Orijinal fayl adı bərpa olundu.")
+                    except Exception as e:
+                        print(f"!!! KRİTİK XƏTA: Fayl adını bərpa etmək olmadı: {e}")
+                        print(f"Fayl indi buradadır: {temp_input_full_path}")
+
                 if process.returncode == 0:
-                    print(f"✓ Uğurlu: {output_filename}")
-                    successful += 1
+                    # Uğurlu bitibsə, output faylının adını düzəlt
+                    final_output_path = os.path.join(output_folder, output_filename)
+                    
+                    if os.path.exists(final_output_path):
+                        try:
+                            os.remove(final_output_path) # Köhnəsi varsa sil
+                        except:
+                            pass
+                    
+                    if os.path.exists(temp_output_path):
+                        os.rename(temp_output_path, final_output_path)
+                        print(f"✓ Uğurlu: {output_filename}")
+                        successful += 1
+                    else:
+                        print(f"✗ Xəta: Müvəqqəti çıxış faylı yaranmadı")
+                        if stderr: print(f"  Stderr: {stderr}")
+                        if stdout: print(f"  Stdout: {stdout}")
+                        failed += 1
                 else:
                     print(f"✗ Xəta: {output_filename}")
                     if stderr:
@@ -123,7 +198,7 @@ def progress_las_to_laz(input_files, output_folder, laszip_path):
                     if stdout:
                         print(f"  Çıxış: {stdout}")
                     failed += 1
-                    
+
             except Exception as e:
                 print(f"✗ Xəta ({os.path.basename(input_file)}): {e}")
                 failed += 1
@@ -149,6 +224,10 @@ if __name__ == "__main__":
     print("LAS to LAZ Converter")
     print("="*50)
     
+    # Tkinter root pəncərəsini bir dəfə yaraduruq
+    root = tk.Tk()
+    root.withdraw()
+    
     # laszip.exe seç
     laszip_path = select_laszip()
     
@@ -159,7 +238,7 @@ if __name__ == "__main__":
     
     # Input faylları seç
     print("\nInput LAS fayllarını seçin...")
-    input_files = input_data(filetypes=[("LAS Files", "*.las"), ("All Files", "*.*")])
+    input_files = input_data(title="LAS fayllarını seçin", filetypes=[("LAS Files", "*.las"), ("All Files", "*.*")])
     
     if not input_files:
         print("Proqram dayandırıldı: Fayl seçilmədi")
@@ -168,7 +247,7 @@ if __name__ == "__main__":
     
     # Output qovluğu seç
     print("\nOutput qovluğunu seçin...")
-    output_folder = output_data()
+    output_folder = output_data(title="Fayl hara yazılacaq seçin")
     
     if not output_folder:
         print("Proqram dayandırıldı: Qovluq seçilmədi")
